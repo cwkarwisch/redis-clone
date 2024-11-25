@@ -26,7 +26,9 @@ func main() {
 			line := s.Text()
 			fmt.Println("received: ", line)
 
-			conn.Write([]byte("+PONG\r\n"))
+			if line == "PING" {
+				conn.Write([]byte("+PONG\r\n"))
+			}
 		}
 	}
 }
