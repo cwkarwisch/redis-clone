@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -20,7 +21,11 @@ func main() {
 			os.Exit(1)
 		}
 
-		for {
+		s := bufio.NewScanner(conn)
+		for s.Scan() {
+			line := s.Text()
+			fmt.Println("received: ", line)
+
 			conn.Write([]byte("+PONG\r\n"))
 		}
 	}
