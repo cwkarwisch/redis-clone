@@ -21,14 +21,18 @@ func main() {
 			os.Exit(1)
 		}
 
-		s := bufio.NewScanner(conn)
-		for s.Scan() {
-			line := s.Text()
-			fmt.Println("received: ", line)
+		go handleConnection(conn)
+	}
+}
 
-			if line == "PING" {
-				conn.Write([]byte("+PONG\r\n"))
-			}
+func handleConnection(conn net.Conn) {
+	s := bufio.NewScanner(conn)
+	for s.Scan() {
+		line := s.Text()
+		fmt.Println("received: ", line)
+
+		if line == "PING" {
+			conn.Write([]byte("+PONG\r\n"))
 		}
 	}
 }
