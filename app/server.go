@@ -5,8 +5,17 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 )
+
+type Request struct {
+	req []byte
+	cmd []byte
+	args [][]byte
+	key string
+	value []byte
+}
+
+var store = make(map[string][]byte)
 
 func main() {
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
@@ -32,15 +41,8 @@ func handleConnection(conn net.Conn) {
 		n, err := conn.Read(buf)
 		if err != nil {
 			fmt.Println("Error reading: ", err.Error())
-		}
-
-		if n < 2 {
-			fmt.Println("Breaking...")
 			break
 		}
-
-		fmt.Println("read n bytes: ", n)
-		fmt.Println("received: ", string(buf[:n]))
 
 		switch buf[0] {
 			case byte('*'):
@@ -53,21 +55,57 @@ func handleConnection(conn net.Conn) {
 }
 
 func handleArray(buf []byte, n int, conn net.Conn) {
-	arrayLength, _ := strconv.Atoi(string(buf[1]))
-	cmdLength, _ := strconv.Atoi(string(buf[5]))
-	command := buf[8:8+cmdLength]
+	req := parseArray(buf)
 
 	switch {
-		case bytes.EqualFold(command, []byte("ping")):
-			fmt.Println("matched ping")
-			conn.Write([]byte("+PONG\r\n"))
-			if arrayLength > 1 {
-				buf = append([]byte{}, buf[0:5]...)
-				buf = append(buf, buf[5+cmdLength+2:]...)
-				handleArray(buf, n, conn)
-			}
-		case bytes.EqualFold(command, []byte("echo")):
-			fmt.Println("matched echo")
-			conn.Write(buf[7+int(cmdLength+3):n])
+	case bytes.EqualFold(req.cmd, []byte("ping")):
+		fmt.Println("matched ping")
+		conn.Write([]byte("+PONG\r\n"))
+	case bytes.EqualFold(req.cmd, []byte("echo")):
+		fmt.Println("matched echo")
+		message := bytes.Join(req.args, []byte("\r\n"))
+		message = append(message, []byte("\r\n")...)
+		conn.Write(message)
+	case bytes.EqualFold(req.cmd, []byte("set")):
+		fmt.Println("matched set")
+		store[string(req.key)] = req.value
+		conn.Write([]byte("+OK\r\n"))
+	case bytes.EqualFold(req.cmd, []byte("get")):
+		fmt.Println("matched get")
+		value, ok := store[string(req.key)]
+		if ok {
+			message := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+			conn.Write([]byte(message))
+		} else {
+			conn.Write([]byte("$-1\r\n"))
+		}
+	}
+}
+
+func parseArray(req []byte) Request {
+	parts := bytes.Split(req, []byte("\r\n"))
+	cmd := parts[2]
+	var key string
+	var value []byte
+	var args [][]byte
+
+	if bytes.EqualFold(cmd, []byte("echo")) {
+		args = parts[3:]
+		if args[len(args)-1][0] == 0 {
+			args = args[:len(args)-1]
+		}
+	} else if bytes.EqualFold(cmd, []byte("set")) {
+		key = string(parts[4])
+		value = parts[6]
+	} else if bytes.EqualFold(cmd, []byte("get")) {
+		key = string(parts[4])
+	}
+
+	return Request{
+		req: req,
+		cmd: cmd,
+		key: key,
+		value: value,
+		args: args,
 	}
 }
