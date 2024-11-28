@@ -5,17 +5,25 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
+	"time"
 )
 
 type Request struct {
-	req []byte
-	cmd []byte
-	args [][]byte
-	key string
-	value []byte
+	Req []byte
+	Cmd []byte
+	Args [][]byte
+	Key string
+	Value []byte
+	ExpirationMilli int64
 }
 
-var store = make(map[string][]byte)
+type Value struct {
+	Value []byte
+	ExpirationMilli int64
+}
+
+var store = make(map[string]*Value)
 
 func main() {
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
@@ -58,23 +66,31 @@ func handleArray(buf []byte, n int, conn net.Conn) {
 	req := parseArray(buf)
 
 	switch {
-	case bytes.EqualFold(req.cmd, []byte("ping")):
+	case bytes.EqualFold(req.Cmd, []byte("ping")):
 		fmt.Println("matched ping")
 		conn.Write([]byte("+PONG\r\n"))
-	case bytes.EqualFold(req.cmd, []byte("echo")):
+	case bytes.EqualFold(req.Cmd, []byte("echo")):
 		fmt.Println("matched echo")
-		message := bytes.Join(req.args, []byte("\r\n"))
+		message := bytes.Join(req.Args, []byte("\r\n"))
 		message = append(message, []byte("\r\n")...)
 		conn.Write(message)
-	case bytes.EqualFold(req.cmd, []byte("set")):
+	case bytes.EqualFold(req.Cmd, []byte("set")):
 		fmt.Println("matched set")
-		store[string(req.key)] = req.value
+		store[req.Key] = &Value{Value: req.Value}
+		if req.ExpirationMilli > 0 {
+			store[req.Key].ExpirationMilli = req.ExpirationMilli
+		}
 		conn.Write([]byte("+OK\r\n"))
-	case bytes.EqualFold(req.cmd, []byte("get")):
+	case bytes.EqualFold(req.Cmd, []byte("get")):
 		fmt.Println("matched get")
-		value, ok := store[string(req.key)]
+		value, ok := store[req.Key]
 		if ok {
-			message := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+			if (value.ExpirationMilli != 0 && value.ExpirationMilli < time.Now().UnixMilli()) {
+				delete(store, req.Key)
+				conn.Write([]byte("$-1\r\n"))
+				return
+			}
+			message := fmt.Sprintf("$%d\r\n%s\r\n", len(value.Value), value.Value)
 			conn.Write([]byte(message))
 		} else {
 			conn.Write([]byte("$-1\r\n"))
@@ -88,6 +104,7 @@ func parseArray(req []byte) Request {
 	var key string
 	var value []byte
 	var args [][]byte
+	var expirationMilli int64
 
 	if bytes.EqualFold(cmd, []byte("echo")) {
 		args = parts[3:]
@@ -97,15 +114,21 @@ func parseArray(req []byte) Request {
 	} else if bytes.EqualFold(cmd, []byte("set")) {
 		key = string(parts[4])
 		value = parts[6]
+		if len(parts) >= 10 && bytes.EqualFold(parts[8], []byte("px")) {
+			ms, _ := strconv.Atoi(string(parts[10]))
+			unixMs := time.Now().UnixMilli()
+			expirationMilli = unixMs + int64(ms)
+		}
 	} else if bytes.EqualFold(cmd, []byte("get")) {
 		key = string(parts[4])
 	}
 
 	return Request{
-		req: req,
-		cmd: cmd,
-		key: key,
-		value: value,
-		args: args,
+		Req: req,
+		Cmd: cmd,
+		Key: key,
+		Value: value,
+		Args: args,
+		ExpirationMilli: expirationMilli,
 	}
 }
