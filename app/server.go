@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -9,9 +10,13 @@ import (
 	"time"
 )
 
+var dir string
+var dbfilename string
+
 type Request struct {
 	Req []byte
 	Cmd []byte
+	SubCmd []byte
 	Args [][]byte
 	Key string
 	Value []byte
@@ -26,6 +31,10 @@ type Value struct {
 var store = make(map[string]*Value)
 
 func main() {
+	flag.StringVar(&dir, "dir", "/tmp/redis-files", "directory where the rdb snapshot file is located")
+	flag.StringVar(&dbfilename, "dbfilename", "dump.rdb", "the name of the rdb file locaterd in dir")
+	flag.Parse()
+
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
 	if err != nil {
 		fmt.Println("Failed to bind to port 6379")
@@ -95,12 +104,24 @@ func handleArray(buf []byte, n int, conn net.Conn) {
 		} else {
 			conn.Write([]byte("$-1\r\n"))
 		}
+	case bytes.EqualFold(req.Cmd, []byte("config")):
+		fmt.Println("matched config")
+		parameterReq := req.Args[1]
+		var parameterResp []byte
+		if bytes.EqualFold(parameterReq, []byte("dir")) {
+			parameterResp = []byte(dir)
+		} else if bytes.EqualFold(parameterReq, []byte("dbfilename")) {
+			parameterResp = []byte(dbfilename)
+		}
+		message := createRespArrayOfBulkStrings([][]byte{parameterReq, parameterResp})
+		conn.Write((message))
 	}
 }
 
 func parseArray(req []byte) Request {
 	parts := bytes.Split(req, []byte("\r\n"))
 	cmd := parts[2]
+	var subCmd []byte
 	var key string
 	var value []byte
 	var args [][]byte
@@ -121,14 +142,32 @@ func parseArray(req []byte) Request {
 		}
 	} else if bytes.EqualFold(cmd, []byte("get")) {
 		key = string(parts[4])
+	} else if bytes.EqualFold(cmd, []byte("config")) {
+		subCmd = parts[4]
+		args = parts[5:]
+		if args[len(args)-1][0] == 0 {
+			args = args[:len(args)-1]
+		}
 	}
 
 	return Request{
 		Req: req,
 		Cmd: cmd,
+		SubCmd: subCmd,
 		Key: key,
 		Value: value,
 		Args: args,
 		ExpirationMilli: expirationMilli,
 	}
+}
+
+func createRespArrayOfBulkStrings(bulkStrings [][]byte) []byte {
+	dataTypeAndCount := fmt.Sprintf("*%d\r\n", len(bulkStrings))
+	var stringPairs string
+	for i := 0; i < len(bulkStrings); i++ {
+		stringPairs += fmt.Sprintf("$%d\r\n%s\r\n", len(bulkStrings[i]), bulkStrings[i])
+	}
+	resp := dataTypeAndCount + stringPairs
+
+	return []byte(resp)
 }
