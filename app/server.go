@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -14,17 +16,17 @@ var dir string
 var dbfilename string
 
 type Request struct {
-	Req []byte
-	Cmd []byte
-	SubCmd []byte
-	Args [][]byte
-	Key string
-	Value []byte
+	Req             []byte
+	Cmd             []byte
+	SubCmd          []byte
+	Args            [][]byte
+	Key             string
+	Value           []byte
 	ExpirationMilli int64
 }
 
 type Value struct {
-	Value []byte
+	Value           []byte
 	ExpirationMilli int64
 }
 
@@ -54,7 +56,7 @@ func main() {
 
 func handleConnection(conn net.Conn) {
 	for {
-		buf := make ([]byte, 1024)
+		buf := make([]byte, 1024)
 		n, err := conn.Read(buf)
 		if err != nil {
 			fmt.Println("Error reading: ", err.Error())
@@ -62,11 +64,11 @@ func handleConnection(conn net.Conn) {
 		}
 
 		switch buf[0] {
-			case byte('*'):
-				fmt.Println("received array")
-				handleArray(buf, n, conn)
-			default:
-				fmt.Println("received unsupported request")
+		case byte('*'):
+			fmt.Println("received array")
+			handleArray(buf, n, conn)
+		default:
+			fmt.Println("received unsupported request")
 		}
 	}
 }
@@ -94,7 +96,7 @@ func handleArray(buf []byte, n int, conn net.Conn) {
 		fmt.Println("matched get")
 		value, ok := store[req.Key]
 		if ok {
-			if (value.ExpirationMilli != 0 && value.ExpirationMilli < time.Now().UnixMilli()) {
+			if value.ExpirationMilli != 0 && value.ExpirationMilli < time.Now().UnixMilli() {
 				delete(store, req.Key)
 				conn.Write([]byte("$-1\r\n"))
 				return
@@ -115,7 +117,110 @@ func handleArray(buf []byte, n int, conn net.Conn) {
 		}
 		message := createRespArrayOfBulkStrings([][]byte{parameterReq, parameterResp})
 		conn.Write((message))
+	case bytes.EqualFold(req.Cmd, []byte("keys")):
+		pattern := req.Args[1]
+		fmt.Printf("pattern %q\n", pattern)
+		if bytes.EqualFold(pattern, []byte("*")) {
+			p := filepath.Join(dir, dbfilename)
+			f, err := os.Open(p)
+			if err != nil {
+				fmt.Println("could not open file located at", p)
+				conn.Write([]byte("$-1\r\n"))
+				return
+			}
+			defer f.Close()
+			keys := extractKeys(f)
+			message := createRespArrayOfBulkStrings(keys)
+			conn.Write((message))
+		}
 	}
+}
+
+func extractKeys(f *os.File) [][]byte {
+	var keys [][]byte
+
+	reader := bufio.NewReader(f)
+	_, err := reader.ReadBytes(byte(0xFB))
+	if err != nil {
+		fmt.Println("error reading up to the FB delimiter")
+		return [][]byte{}
+	}
+
+	buffer := make([]byte, 1)
+	_, err = reader.Read(buffer)
+	if err != nil {
+		fmt.Println("error reading hash table size")
+		return [][]byte{}
+	}
+
+	hashSize := int(buffer[0])
+	fmt.Println("hashSize:", hashSize)
+
+	buffer = make([]byte, 1)
+	_, err = reader.Read(buffer)
+	if err != nil {
+		fmt.Println("error reading hash table size of keys with an expire")
+		return [][]byte{}
+	}
+
+	hashSizeExpire := int(buffer[0])
+	fmt.Println("hashSizeExpire:", hashSizeExpire)
+
+	for i := 0; i < hashSize; i++ {
+		buffer = make([]byte, 1)
+		_, err = reader.Read(buffer)
+		if err != nil {
+			fmt.Println("error reading first byte of key with index:", i)
+			return [][]byte{}
+		}
+
+		// check if key has an expire in either ms or seconds
+		if buffer[0] == byte(0xFC) {
+			fmt.Println("key has expire in ms:")
+			expireBuf := make([]byte, 8) //timestamp is an 8-byte unsigned long
+			fmt.Println("key will expire at:", expireBuf)
+
+		}
+
+		if buffer[0] == byte(0xFD) {
+			fmt.Println("key has expire in seconds:")
+			expireBuf := make([]byte, 4) //timestamp is a 4-byte unsigned integer
+			fmt.Println("key will expire at:", expireBuf)
+
+		}
+
+		fmt.Println("value's types and encoding:", buffer)
+
+		// read the first two bits of the first byte to determine encoding
+		buffer = make([]byte, 1)
+		_, err = reader.Read(buffer)
+		if err != nil {
+			fmt.Println("error reading first byte of string")
+			return [][]byte{}
+		}
+		fmt.Println("first byte of size encoded value:", buffer)
+		firstByte := buffer[0]
+		firstTwoBits := firstByte >> 6
+		fmt.Println("first two bits:", firstTwoBits)
+		if firstTwoBits == 0b00 {
+			fmt.Println("The size is the remaining 6 bits of the byte")
+		} else {
+			fmt.Println("Unsupported length encoding")
+			return [][]byte{}
+		}
+		size := int(firstByte)
+		fmt.Println("size:", size)
+		buffer = make([]byte, size)
+		_, err = reader.Read(buffer)
+		if err != nil {
+			fmt.Println("error reading string encoded key")
+			return [][]byte{}
+		}
+		fmt.Println("string encoded key:", buffer)
+		keys = append(keys, buffer)
+	}
+
+	return keys
 }
 
 func parseArray(req []byte) Request {
@@ -148,15 +253,20 @@ func parseArray(req []byte) Request {
 		if args[len(args)-1][0] == 0 {
 			args = args[:len(args)-1]
 		}
+	} else if bytes.EqualFold(cmd, []byte("keys")) {
+		args = parts[3:]
+		if args[len(args)-1][0] == 0 {
+			args = args[:len(args)-1]
+		}
 	}
 
 	return Request{
-		Req: req,
-		Cmd: cmd,
-		SubCmd: subCmd,
-		Key: key,
-		Value: value,
-		Args: args,
+		Req:             req,
+		Cmd:             cmd,
+		SubCmd:          subCmd,
+		Key:             key,
+		Value:           value,
+		Args:            args,
 		ExpirationMilli: expirationMilli,
 	}
 }
