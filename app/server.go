@@ -119,7 +119,6 @@ func handleArray(buf []byte, n int, conn net.Conn) {
 		conn.Write((message))
 	case bytes.EqualFold(req.Cmd, []byte("keys")):
 		pattern := req.Args[1]
-		fmt.Printf("pattern %q\n", pattern)
 		if bytes.EqualFold(pattern, []byte("*")) {
 			p := filepath.Join(dir, dbfilename)
 			f, err := os.Open(p)
@@ -129,14 +128,14 @@ func handleArray(buf []byte, n int, conn net.Conn) {
 				return
 			}
 			defer f.Close()
-			keys := extractKeys(f)
+			keys := extractKeysFromRdb(f)
 			message := createRespArrayOfBulkStrings(keys)
 			conn.Write((message))
 		}
 	}
 }
 
-func extractKeys(f *os.File) [][]byte {
+func extractKeysFromRdb(f *os.File) [][]byte {
 	var keys [][]byte
 
 	reader := bufio.NewReader(f)
@@ -195,7 +194,7 @@ func extractKeys(f *os.File) [][]byte {
 		buffer = make([]byte, 1)
 		_, err = reader.Read(buffer)
 		if err != nil {
-			fmt.Println("error reading first byte of string")
+			fmt.Println("error reading first byte of key")
 			return [][]byte{}
 		}
 		fmt.Println("first byte of size encoded value:", buffer)
@@ -208,16 +207,47 @@ func extractKeys(f *os.File) [][]byte {
 			fmt.Println("Unsupported length encoding")
 			return [][]byte{}
 		}
+
+		// read the actual key
 		size := int(firstByte)
-		fmt.Println("size:", size)
+		fmt.Println("size of key:", size)
 		buffer = make([]byte, size)
 		_, err = reader.Read(buffer)
 		if err != nil {
 			fmt.Println("error reading string encoded key")
 			return [][]byte{}
 		}
-		fmt.Println("string encoded key:", buffer)
+		fmt.Printf("string encoded key: %q\n", buffer)
 		keys = append(keys, buffer)
+
+		// read the first two bits of the value to determine encoding
+		buffer = make([]byte, 1)
+		_, err = reader.Read(buffer)
+		if err != nil {
+			fmt.Println("error reading first byte of value")
+			return [][]byte{}
+		}
+		fmt.Println("first byte of size encoded value:", buffer)
+		firstByte = buffer[0]
+		firstTwoBits = firstByte >> 6
+		fmt.Println("first two bits:", firstTwoBits)
+		if firstTwoBits == 0b00 {
+			fmt.Println("The size is the remaining 6 bits of the byte")
+		} else {
+			fmt.Println("Unsupported length encoding")
+			return [][]byte{}
+		}
+
+		// read the actual value
+		size = int(firstByte)
+		fmt.Println("size of value:", size)
+		buffer = make([]byte, size)
+		_, err = reader.Read(buffer)
+		if err != nil {
+			fmt.Println("error reading string encoded value")
+			return [][]byte{}
+		}
+		fmt.Printf("string encoded value: %q\n", buffer)
 	}
 
 	return keys
