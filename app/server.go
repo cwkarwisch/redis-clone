@@ -57,7 +57,7 @@ func main() {
 func handleConnection(conn net.Conn) {
 	for {
 		buf := make([]byte, 1024)
-		n, err := conn.Read(buf)
+		_, err := conn.Read(buf)
 		if err != nil {
 			fmt.Println("Error reading: ", err.Error())
 			break
@@ -66,14 +66,14 @@ func handleConnection(conn net.Conn) {
 		switch buf[0] {
 		case byte('*'):
 			fmt.Println("received array")
-			handleArray(buf, n, conn)
+			handleArray(buf, conn)
 		default:
 			fmt.Println("received unsupported request")
 		}
 	}
 }
 
-func handleArray(buf []byte, n int, conn net.Conn) {
+func handleArray(buf []byte, conn net.Conn) {
 	req := parseArray(buf)
 
 	switch {
